@@ -41,5 +41,10 @@ def save_behavior(behavior, confidence):
         confidence
     ))
 
+    print(
+    f"[DB 저장] {behavior} "
+    f"{confidence:.2f}"
+)
+
     conn.commit()
     conn.close()

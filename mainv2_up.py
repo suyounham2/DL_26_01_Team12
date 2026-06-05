@@ -10,11 +10,11 @@ from database.db_manager import save_behavior, create_table
 LOG_DIR = "logs"
 LOG_FILE = os.path.join(LOG_DIR, "behavior_log.csv")
 
-# 임계값 설정 (현실적인 웹캠 픽셀 좌표계 기준 반영)
-VELOCITY_THRESHOLD = 0.04   # 쾅 떨어지는 순간의 Y축 가속도 하향 조정 (포착력 극대화)
+# 임계값 설정
+VELOCITY_THRESHOLD = 0.04   # Y축 가속도 하향 조정
 FALL_ANGLE_LIMIT = 45.0     # 낙상 판단 각도
-LIMIT_TIME = 2.0            # 누워있는 유지 시간 (초)
-RECOVERY_ANGLE = 65.0       # 회복/복귀 각도
+LIMIT_TIME = 2.0            # 누워있는 유지 시간
+RECOVERY_ANGLE = 65.0       # 복귀 각도
 
 def init_log_file():
     if not os.path.exists(LOG_DIR):
@@ -62,11 +62,11 @@ def main():
     last_saved_status = None
 
 
-    # 시계열 버퍼 (최근 1초치 데이터 저축 공간)
+    # 시계열 버퍼 
     angle_buffer = deque(maxlen=30)
     velocity_buffer = deque(maxlen=30)
 
-    # 윈도우 드라이버 호환성을 위해 백엔드 설정 강제 추가
+    # 백엔드 설정 강제 추가(window 드라이버 호환성)
     print("⏳ 웹캠 하드웨어 초기화 중...")
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -84,10 +84,10 @@ def main():
             print("프레임을 읽어오지 못했습니다.")
             break
 
-        # 실시간 관제 모니터링을 위한 좌우 반전
+        # 좌우 반전(실시간 관제 모니터링)
         frame = cv2.flip(frame, 1)
 
-       #일시적 가림 및 조도 변화 환경에서의 추적 안정성 향상(persist=True 옵션 활용하여 동일 인물의 객체 ID 유지)
+       #일시적 가림, 조도 변화 환경 추적 안정성 향상(persist=True 옵션 활용하여 동일 인물의 객체 ID 유지)
         results = yolo_pose_model.track(
             frame,
             persist=True,
@@ -114,7 +114,7 @@ def main():
                     center_hip_x = (left_hip[0] + right_hip[0]) / 2
                     center_hip_y = (left_hip[1] + right_hip[1]) / 2
 
-                    # 1프레임당 원본 각도 계산
+                    # 원본 각도 계산
                     spine_angle = calculate_spine_angle(center_shoulder_x, center_shoulder_y,
                                                         center_hip_x, center_hip_y)
 
@@ -126,7 +126,7 @@ def main():
                     prev_angle = spine_angle
 
                     if prev_shoulder_y is not None:
-                        # 1프레임당 원본 속도 계산
+                        # 원본 속도 계산
                         y_velocity = center_shoulder_y - prev_shoulder_y
 
                         # 시계열 버퍼에 실시간 적재
@@ -142,11 +142,8 @@ def main():
                         # 실시간 수치 모니터링용 터미널 프린트
                         print(f"📊 각도:{spine_angle:.1f}° | 평균속도:{avg_velocity:.4f} | 각도분산:{angle_var:.1f}")
 
-                        # ------------------------------------------------------------------
-                        # 🔥 [대수술 완료된 고도화 판정 로직 인터페이스]
-                        # ------------------------------------------------------------------
                         
-                        # 💡 가속도 판별(STEP 1)은 거대한 분산 수치에 막히지 않도록 필터 바깥에서 생으로 잡습니다.
+                        # 1단계 가속도 판별
                         if (
                             avg_velocity > 0.02
                             and angle_change > 5
@@ -160,9 +157,9 @@ def main():
                             status_text = "WARNING"
                             print("🚨 [ALERT] 가속도 임계값 돌파! WARNING 진입")
 
-                        # STEP 2: 위험 징후 감지 후 지속 시간 및 각도 검증
+                        # 2단계 위험 징후 감지 후 지속 시간 및 각도 검증
                         if is_falling:
-                            # 넘어지는 와중에는 데이터가 튀므로, 오직 바닥 충돌 후 '가로 각도'와 '정지 상태(속도 안정)'만 체크합니다.
+                            # 넘어지는 와중에는 데이터가 튀므로, 오직 바닥 충돌 후 '가로 각도'와 '정지 상태(속도 안정)'만 체크
                             if (
                                 fall_angle_triggered
                                 and avg_angle < FALL_ANGLE_LIMIT
@@ -208,7 +205,7 @@ def main():
                                 elif avg_angle <= FALL_ANGLE_LIMIT:
                                     status_text = "LYING"
 
-                    # 매 프레임 좌표 동기화와 로그 저장은 끊김이 없도록 최하단 샌드박스에 배치합니다.
+                   
                     prev_shoulder_y = center_shoulder_y
 
                     save_log(status_text, spine_angle, y_velocity)
@@ -222,7 +219,7 @@ def main():
                     
                     
 
-        # 상태별 가시성 확보를 위한 UI 색상 맵핑
+        # 상태별 가시성 확보
         if status_text == "FALL DETECTED":
             text_color = (0, 0, 255)      # 위험 상황: 빨간색
         elif status_text == "WARNING":

@@ -48,3 +48,23 @@ def save_behavior(behavior, confidence):
 
     conn.commit()
     conn.close()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO behavior_log
+    (timestamp, behavior, confidence)
+    VALUES (?, ?, ?)
+    """,
+    (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        behavior,
+        confidence
+    ))
+
+    print(
+    f"[DB 저장] {behavior} "
+    f"{confidence:.2f}"
+)
+
+    conn.commit()
+    conn.close()

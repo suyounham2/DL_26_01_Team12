@@ -1,0 +1,235 @@
+# main.py
+import cv2
+from ultralytics import YOLO
+import time
+import math
+import os
+from collections import deque
+from core.send_alert import send_discord_alert
+from database.db_manager import save_behavior, create_table
+
+# 💡 독립 분리된 칼만 필터 모듈 상속 바인딩
+from core.filters import KalmanFilter
+
+LOG_DIR = "logs"
+LOG_FILE = os.path.join(LOG_DIR, "behavior_log.csv")
+
+# 임계값 설정 (현실적인 웹캠 픽셀 좌표계 기준 반영)
+VELOCITY_THRESHOLD = 0.04   # 쾅 떨어지는 순간의 Y축 가속도 하향 조정 (포착력 극대화)
+FALL_ANGLE_LIMIT = 45.0     # 낙상 판단 각도
+LIMIT_TIME = 2.0            # 누워있는 유지 시간 (초)
+RECOVERY_ANGLE = 65.0       # 회복/복귀 각도
+
+def init_log_file():
+    if not os.path.exists(LOG_DIR):
+        os.makedirs(LOG_DIR)
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            # 💡 지표 시각화 추출을 위해 원본 각도(raw_angle)와 칼만 보정 각도(kalman_angle)를 교차 적재하도록 컬럼 수정
+            f.write("timestamp,status,raw_angle,kalman_angle,shoulder_y_velocity\n")
+
+def save_log(status, raw_angle, kalman_angle, velocity):
+    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{current_time},{status},{raw_angle:.2f},{kalman_angle:.2f},{velocity:.4f}\n")
+
+def calculate_spine_angle(sx, sy, hx, hy):
+    dx = abs(hx - sx)
+    dy = abs(hy - sy)
+    if dx == 0:
+        return 90.0
+    return math.degrees(math.atan(dy / dx))
+
+def moving_average(buffer):
+    return sum(buffer) / len(buffer) if buffer else 0.0
+
+def variance(buffer):
+    mean = moving_average(buffer)
+    return sum((x - mean) ** 2 for x in buffer) / len(buffer) if buffer else 0.0
+
+def main():
+    init_log_file()
+    create_table()
+    
+    print("⏳ YOLOv8 포즈 모델 로드 중...")
+    yolo_pose_model = YOLO("yolov8n-pose.pt")
+
+    # 💡 척추 각도 떨림(지터링) 제어용 순수 칼만 필터 인스턴스 초기화 점화
+    kf = KalmanFilter(process_variance=1e-4, measurement_variance=2.5e-1, initial_value=90.0)
+
+    prev_shoulder_y = None
+    fall_start_time = None
+    is_falling = False
+
+    prev_angle = None
+    angle_change = 0
+
+    status_text = "NORMAL"
+    alert_sent = False
+    fall_angle_triggered = False
+    last_saved_status = None
+
+    # 시계열 버퍼 (최근 1초치 데이터 저축 공간)
+    angle_buffer = deque(maxlen=30)
+    velocity_buffer = deque(maxlen=30)
+
+    print("⏳ 웹캠 하드웨어 초기화 중...")
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    if not cap.isOpened():
+        print("❌ 웹캠을 열 수 없습니다.")
+        return
+
+    print("🚀 시스템 가동 시작. 종료하려면 'q'를 누르세요.")
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            print("프레임을 읽어오지 못했습니다.")
+            break
+
+        frame = cv2.flip(frame, 1)
+
+        results = yolo_pose_model.track(
+            frame,
+            persist=True,
+            verbose=False
+        )
+        annotated_frame = results[0].plot()
+
+        spine_angle = 90.0
+        kalman_angle = 90.0
+        y_velocity = 0.0
+
+        if results[0].keypoints is not None and len(results[0].keypoints.xyn) > 0:
+            keypoints = results[0].keypoints.xyn[0]
+
+            if len(keypoints) > 12:
+                left_shoulder = keypoints[5]
+                right_shoulder = keypoints[6]
+                left_hip = keypoints[11]
+                right_hip = keypoints[12]
+
+                if left_shoulder[1] > 0 and right_shoulder[1] > 0:
+                    center_shoulder_x = (left_shoulder[0] + right_shoulder[0]) / 2
+                    center_shoulder_y = (left_shoulder[1] + right_shoulder[1]) / 2
+                    center_hip_x = (left_hip[0] + right_hip[0]) / 2
+                    center_hip_y = (left_hip[1] + right_hip[1]) / 2
+
+                    # 1프레임당 원본 각도 계산
+                    spine_angle = calculate_spine_angle(center_shoulder_x, center_shoulder_y,
+                                                                        center_hip_x, center_hip_y)
+
+                    # 💡 [순수 부품 장착 팩트]: 튀는 원본 각도를 칼만 필터 통과시켜 평활화
+                    kalman_angle = kf.update(spine_angle)
+
+                    if prev_angle is not None:
+                        angle_change = abs(kalman_angle - prev_angle)
+                    else:
+                        angle_change = 0
+
+                    prev_angle = kalman_angle
+
+                    if prev_shoulder_y is not None:
+                        y_velocity = center_shoulder_y - prev_shoulder_y
+
+                        # 💡 수연님 기존 낙상 로직의 안전 정합성을 위해 버퍼에는 칼만 보정 각도 적재
+                        angle_buffer.append(kalman_angle)
+                        velocity_buffer.append(y_velocity)
+
+                        avg_angle = moving_average(angle_buffer)
+                        avg_velocity = moving_average(velocity_buffer)
+                        angle_var = variance(angle_buffer)
+                        velocity_var = variance(velocity_buffer)
+
+                        print(f"📊 각도:{kalman_angle:.1f}° | 평균속도:{avg_velocity:.4f} | 각도분산:{angle_var:.1f}")
+
+                        # ------------------------------------------------------------------
+                        # 🔥 [수연님 기존 낙상 판정 로직 100% 완전 보존 구역]
+                        # ------------------------------------------------------------------
+                        if (
+                            avg_velocity > 0.02
+                            and angle_change > 5
+                            and not is_falling
+                        ):
+                            fall_start_time = time.time()
+                            is_falling = True
+                            fall_angle_triggered = True
+                            status_text = "WARNING"
+                            print("🚨 [ALERT] 가속도 임계값 돌파! WARNING 진입")
+
+                        if is_falling:
+                            if (
+                                fall_angle_triggered
+                                and avg_angle < FALL_ANGLE_LIMIT
+                                and abs(avg_velocity) < 0.01
+                            ):
+                                duration = time.time() - fall_start_time
+                                if duration >= LIMIT_TIME:
+                                    status_text = "FALL DETECTED"
+
+                                    if not alert_sent:
+                                        try:
+                                            send_discord_alert()
+                                        except: pass
+                                        print("📱 디스코드 알림 전송")
+                                        alert_sent = True
+                            else:
+                                if avg_angle > RECOVERY_ANGLE:
+                                    is_falling = False
+                                    fall_angle_triggered = False
+                                    status_text = "NORMAL"
+                                    alert_sent = False
+                        
+                        else:
+                            print(
+                                f"avg_angle={avg_angle:.1f}, "
+                                f"angle_var={angle_var:.1f}, "
+                                f"status={status_text}"
+                            )
+
+                            if avg_angle > RECOVERY_ANGLE:
+                                status_text = "NORMAL"
+
+                            elif angle_var < 50.0:
+                                if FALL_ANGLE_LIMIT < avg_angle <= RECOVERY_ANGLE:
+                                    status_text = "SITTING"
+
+                                elif avg_angle <= FALL_ANGLE_LIMIT:
+                                    status_text = "LYING"
+
+                    prev_shoulder_y = center_shoulder_y
+
+                    # 💡 지표 데이터 이중 출력을 위해 원본 각도와 칼만 각도 동시 세이브 적재
+                    save_log(status_text, spine_angle, kalman_angle, y_velocity)
+
+                    if status_text != last_saved_status:
+                        try:
+                            save_behavior(status_text, kalman_angle)
+                        except: pass
+                        last_saved_status = status_text
+
+        # 상태별 가시성 확보를 위한 UI 색상 맵핑
+        if status_text == "FALL DETECTED": text_color = (0, 0, 255)
+        elif status_text == "WARNING": text_color = (0, 165, 255)
+        elif status_text == "SITTING": text_color = (255, 255, 0)
+        elif status_text == "LYING": text_color = (0, 255, 255)
+        else: text_color = (0, 255, 0)
+
+        # 모니터 렌더링 텍스트 출력 (칼만 필터 각도 상시 모니터링 매핑)
+        cv2.putText(annotated_frame, f"Status: {status_text}", (30, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2)
+        cv2.putText(annotated_frame, f"Spine Angle: {kalman_angle:.1f} deg", (30, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        cv2.imshow("Elderly Behavior Detection System Platform", annotated_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()

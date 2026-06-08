@@ -155,7 +155,7 @@ def main():
 
                         #print(f"각도:{kalman_angle:.1f}° | 평균속도:{avg_velocity:.4f} | 각도분산:{angle_var:.1f}")
 
-                        #낙하 평균 속도 0.02 / 척추 각도 순간적으로 5도 이상 변화
+                        #낙하 평균 속도 0.01 / 척추 각도 순간적으로 2.5도 이상 변화
                         if (
                             avg_velocity > 0.01
                             and angle_change > 2.5

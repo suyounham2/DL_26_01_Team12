@@ -2,9 +2,9 @@
 복합 데이터 행동 분석 기반 독거노인 실시간 응급 낙상 감지 시스템입니다.
 
 ## Overview
-본 시스템은 웹캠 환경에서 독거노인의 생활 행동 패턴을 실시간 모니터링하고 응급 낙상 상황을 방어하기 위한 앱입니다.
+본 시스템은 웹캠 환경에서 독거노인의 생활 행동 패턴을 실시간 모니터링하고 응급 낙상 상황에 신속하게 대응하기 위한 앱입니다.
 
-YOLOv8-Pose 모델을 활용하여 신체 관절 좌표를 추출하고, 척추 각도 및 Y축 신체 이동 속도를 분석하여 낙상 상태를 자동 판정합니다. 응급 상황 발생 시 비상 알림을 전송하며, 로그 분석 결과는 Stramlit 대시보드를 통해 확인할 수 있습니다.
+YOLOv8-Pose 모델을 활용하여 신체 관절 좌표를 추출하고, 척추 각도 및 Y축 신체 이동 속도를 분석하여 낙상 상태를 자동 판정합니다. FALL DETECTED 상태 감지 시 비상 알림을 전송하며, 로그 분석 결과는 Streamlit 대시보드를 통해 확인할 수 있습니다.
 
 ## Features
 * YOLOv8-Pose 기반 실시간 신체 관절 좌표 추출
@@ -29,12 +29,6 @@ SQLite 로그 저장
       ↓
 Discord 알림 / Streamlit Dashboard
 ```
-
-본 시스템은 웹캠을 통해 영상을 입력받아 관절 좌표를 추출하고, 척추 각도와 신체 이동 속도를 계산하여 사용자의 상태를 판단합니다.
-
-판단된 상태는 SQLite 데이터베이스에 저장되며, Streamlit 대시보드에서 실시간으로 확인할 수 있습니다.
-
-또한 FALL DETECTED 상태가 감지될 시 Discord를 통해 보호자에게 알림을 전송합니다.
 
 ## Project Structure
 ```text
@@ -70,8 +64,7 @@ elder_behavior_system/
 ## How to Run
 ### 1. 필요한 라이브러리 설치
 ```bash
-pip install opencv-python ultralytics
-pip install streamlit
+pip install opencv-python ultralytics streamlit
 ```
 
 ### 2. 낙상 감지 시스템 실행

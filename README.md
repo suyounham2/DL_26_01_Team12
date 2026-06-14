@@ -27,7 +27,7 @@ Webcam 입력
       ↓
 SQLite 로그 저장
       ↓
-Discord 알림 / Streamlit Dashboard
+Discord 알림 / Streamlit 대시보드
 ```
 
 ## Project Structure
@@ -64,7 +64,7 @@ elder_behavior_system/
 ## How to Run
 ### 1. 필요한 라이브러리 설치
 ```bash
-pip install opencv-python ultralytics streamlit
+pip install opencv-python ultralytics streamlit requests pandas
 ```
 
 ### 2. 낙상 감지 시스템 실행
